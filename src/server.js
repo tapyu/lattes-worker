@@ -99,22 +99,50 @@ app.get("/smoke", async (req, res) => {
 
 // -------- endpoint que o n8n vai chamar --------
 app.post("/lattes/atualizar", async (req, res) => {
-  const { articles } = req.body || {};
-  if (!Array.isArray(articles)) {
-    return res.status(400).json({ error: "articles[] é obrigatório" });
-  }
-
   try {
-    await atualizarLattes(articles);
+    const payload = req.body;
+
+    // O n8n SEMPRE envia um array
+    if (!Array.isArray(payload)) {
+      return res.status(400).json({
+        error: "O corpo da requisição deve ser um array de objetos SerpAPI."
+      });
+    }
+
+    // Converte o array bruto → estrutura simplificada p/ o Lattes
+    const articles = payload.map((item) => {
+      const c = item.citation || {};
+      const firstResource = Array.isArray(c.resources) ? c.resources[0] : null;
+
+      return {
+        title: c.title,
+        link: c.link,
+        pdf: firstResource?.link || null,
+        authors: c.authors,
+        publication_date: c.publication_date,
+        conference: c.conference,
+        pages: c.pages,
+        description: c.description
+      };
+    });
+
+    if (articles.length === 0) {
+      return res.status(400).json({
+        error: "Nenhum artigo encontrado no payload."
+      });
+    }
+
+    // Aqui chamamos o Playwright para inserir os artigos no Lattes
+    // await atualizarLattes(articles);
     return res.status(200).json({
       status: "ok",
-      processed: articles.length,
+      processed: articles.length
     });
   } catch (err) {
     console.error("Erro ao atualizar Lattes:", err);
     return res.status(500).json({
       status: "error",
-      message: "Falha ao atualizar Lattes",
+      message: "Falha ao atualizar Lattes"
     });
   }
 });
