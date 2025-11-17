@@ -4,12 +4,90 @@ import { chromium } from "playwright";
 const app = express();
 app.use(express.json());
 
-// healthcheck
+// >>>>>> AQUI: credenciais vindas das variáveis de ambiente <<<<<<
+const LATTES_USERNAME = process.env.LATTES_USERNAME;
+const CPF = process.env.CPF;
+
+if (!LATTES_USERNAME || !CPF) {
+  console.warn(
+    "⚠️ LATTES_USERNAME ou CPF não definidos nas variáveis de ambiente."
+  );
+}
+
+// -------- função que realmente loga no Lattes e cadastra artigos --------
+async function atualizarLattes(articles = []) {
+  // abre navegador headless
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    // 1) abre página inicial do Lattes
+    await page.goto("https://lattes.cnpq.br/", { waitUntil: "networkidle" });
+
+    // 2) NAVEGA ATÉ A TELA DE LOGIN
+    // ⚠️ Os seletores abaixo são EXEMPLOS. Você precisa abrir o Lattes no navegador,
+    // inspecionar o HTML e trocar por seletores reais.
+    //
+    // Exemplo: clicar em "Atualizar Currículo" ou equivalente:
+    // await page.click("text=Atualizar Currículo");
+
+    // Se o login abrir em outra URL (SSO etc.), faça:
+    // await page.waitForURL("https://ALGUMA-URL-DE-LOGIN/*");
+
+    // 3) PREENCHER CPF/LOGIN E SENHA
+    // Trocar '#campoLogin' e '#campoSenha' pelos seletores verdadeiros
+    await page.fill("#campoLogin", LATTES_USERNAME);
+    await page.fill("#campoSenha", CPF);
+
+    await Promise.all([
+      page.click("#botaoEntrar"), // trocar seletor também
+      page.waitForLoadState("networkidle"),
+    ]);
+
+    // 4) IR PARA A ÁREA DE ARTIGOS
+    // De novo: você precisa ajustar para o fluxo real de menus/links.
+    // Pode ser um click em menu, ou ir direto pra uma URL interna.
+    //
+    // Exemplo genérico:
+    // await page.click("text=Produção Bibliográfica");
+    // await page.click("text=Artigos publicados");
+    // await page.waitForLoadState("networkidle");
+
+    // 5) PARA CADA ARTIGO DO JSON, CADASTRAR
+    for (const art of articles) {
+      // Isso aqui é SÓ UM MOLDE. Troque IDs/classes pelos nomes reais.
+      //
+      // Exemplo: clicar em "Novo artigo"
+      // await page.click("text=Novo artigo");
+      // await page.waitForSelector("#campoTituloArtigo");
+
+      // título
+      // await page.fill("#campoTituloArtigo", art.title || "");
+
+      // se você já tiver esses campos no JSON, pode incluir:
+      // await page.fill("#campoAno", String(art.year || ""));
+      // await page.fill("#campoRevista", art.journal || "");
+
+      // salvar
+      // await Promise.all([
+      //   page.click("text=Salvar"),
+      //   page.waitForLoadState("networkidle"),
+      // ]);
+
+      // Por enquanto, só pra ver algo acontecendo, vamos logar no console:
+      console.log("Simulando cadastro de artigo:", art.title);
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
+// -------------------- healthcheck --------------------
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-// smoke test: abre o site do Lattes e retorna o título
+// -------------------- smoke test --------------------
 app.get("/smoke", async (req, res) => {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
@@ -19,16 +97,27 @@ app.get("/smoke", async (req, res) => {
   res.json({ title });
 });
 
-// endpoint que o n8n vai chamar (por enquanto só valida entrada)
+// -------- endpoint que o n8n vai chamar --------
 app.post("/lattes/atualizar", async (req, res) => {
   const { articles } = req.body || {};
   if (!Array.isArray(articles)) {
     return res.status(400).json({ error: "articles[] é obrigatório" });
   }
-  // Próximos passos: enfileirar e processar com Playwright
-  return res.status(202).json({ status: "queued", received: articles.length });
+
+  try {
+    await atualizarLattes(articles);
+    return res.status(200).json({
+      status: "ok",
+      processed: articles.length,
+    });
+  } catch (err) {
+    console.error("Erro ao atualizar Lattes:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Falha ao atualizar Lattes",
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`listening on :${PORT}`));
-
