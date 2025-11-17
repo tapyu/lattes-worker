@@ -4,78 +4,104 @@ import { chromium } from "playwright";
 const app = express();
 app.use(express.json());
 
-// >>>>>> AQUI: credenciais vindas das variáveis de ambiente <<<<<<
-const LATTES_USERNAME = process.env.LATTES_USERNAME;
-const CPF = process.env.CPF;
+// ====== CREDENCIAIS NAS VARIÁVEIS DE AMBIENTE ======
+const LATTES_CPF = process.env.LATTES_CPF;
+const LATTES_PASSWORD = process.env.LATTES_PASSWORD;
 
-if (!LATTES_USERNAME || !CPF) {
+if (!LATTES_CPF || !LATTES_PASSWORD) {
   console.warn(
-    "⚠️ LATTES_USERNAME ou CPF não definidos nas variáveis de ambiente."
+    "⚠️ LATTES_CPF ou LATTES_PASSWORD não definidos nas variáveis de ambiente."
   );
 }
 
-// -------- função que realmente loga no Lattes e cadastra artigos --------
-async function atualizarLattes(articles = []) {
-  // abre navegador headless
+// ====== FUNÇÃO: FAZ LOGIN NO LATTES VIA CPF (SSO CNPq) ======
+async function loginLattes() {
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  const page = await context.newPage();
 
   try {
-    // 1) abre página inicial do Lattes
-    await page.goto("https://lattes.cnpq.br/", { waitUntil: "networkidle" });
+    console.log("➡️ Abrindo página de login do Lattes (pkg_login.prc_form)…");
 
-    // 2) NAVEGA ATÉ A TELA DE LOGIN
-    // ⚠️ Os seletores abaixo são EXEMPLOS. Você precisa abrir o Lattes no navegador,
-    // inspecionar o HTML e trocar por seletores reais.
-    //
-    // Exemplo: clicar em "Atualizar Currículo" ou equivalente:
-    // await page.click("text=Atualizar Currículo");
+    // Antes de carregar, prepara o handler do popup "Você será redirecionado..."
+    page.once("dialog", async (dialog) => {
+      console.log("⚠️ Dialog apareceu:", dialog.message());
+      await dialog.accept();
+    });
 
-    // Se o login abrir em outra URL (SSO etc.), faça:
-    // await page.waitForURL("https://ALGUMA-URL-DE-LOGIN/*");
+    // URL que corresponde a "Atualizar currículo"
+    await page.goto("https://wwws.cnpq.br/cvlattesweb/pkg_login.prc_form", {
+      waitUntil: "load",
+    });
 
-    // 3) PREENCHER CPF/LOGIN E SENHA
-    // Trocar '#campoLogin' e '#campoSenha' pelos seletores verdadeiros
-    await page.fill("#campoLogin", LATTES_USERNAME);
-    await page.fill("#campoSenha", CPF);
+    console.log("➡️ Aguardando redirecionar para login.cnpq.br (tela CPF)…");
+    await page.waitForURL(
+      /login\.cnpq\.br\/auth\/realms\/cnpq\/protocol\/openid-connect\/auth.*/,
+      { timeout: 30000 }
+    );
 
+    // ===== Tela do CPF =====
+    console.log("✏️ Preenchendo CPF…");
+    await page.waitForSelector("#accountId", { timeout: 15000 });
+    await page.fill("#accountId", LATTES_CPF);
+
+    console.log("➡️ Enviando CPF (botão Continue)…");
     await Promise.all([
-      page.click("#botaoEntrar"), // trocar seletor também
-      page.waitForLoadState("networkidle"),
+      page.click("#kc-login"),
+      page.waitForNavigation({ waitUntil: "networkidle" }),
     ]);
 
-    // 4) IR PARA A ÁREA DE ARTIGOS
-    // De novo: você precisa ajustar para o fluxo real de menus/links.
-    // Pode ser um click em menu, ou ir direto pra uma URL interna.
-    //
-    // Exemplo genérico:
-    // await page.click("text=Produção Bibliográfica");
-    // await page.click("text=Artigos publicados");
-    // await page.waitForLoadState("networkidle");
+    // ===== Tela da senha =====
+    console.log("➡️ Aguardando tela da senha…");
+    await page.waitForURL(
+      /login\.cnpq\.br\/auth\/realms\/cnpq\/login-actions\/authenticate.*/,
+      { timeout: 30000 }
+    );
 
-    // 5) PARA CADA ARTIGO DO JSON, CADASTRAR
+    console.log("✏️ Preenchendo senha…");
+    await page.waitForSelector("#password", { timeout: 15000 });
+    await page.fill("#password", LATTES_PASSWORD);
+
+    console.log("➡️ Enviando senha (botão Entrar)…");
+    await Promise.all([
+      page.click("#kc-login"),
+      page.waitForNavigation({ waitUntil: "networkidle" }),
+    ]);
+
+    // ===== Página do Currículo Lattes =====
+    console.log("➡️ Aguardando página do Currículo Lattes…");
+    await page.waitForURL(
+      /wwws\.cnpq\.br\/cvlattesweb\/PKG_MENU\.menu.*/,
+      { timeout: 30000 }
+    );
+
+    console.log("✅ Login no Lattes concluído com sucesso.");
+    return { browser, page };
+  } catch (err) {
+    console.error("❌ Erro durante login no Lattes:", err);
+    await browser.close();
+    throw err;
+  }
+}
+
+// ====== FUNÇÃO: ATUALIZAR LATTES (POR ENQUANTO SÓ LOGIN + PRINT) ======
+async function atualizarLattes(articles = []) {
+  const { browser, page } = await loginLattes();
+
+  try {
+    console.log(`📚 Recebi ${articles.length} artigos para processar.`);
+
+    // META INICIAL: apenas tirar um print da página logada
+    await page.screenshot({
+      path: "lattes-dashboard.png",
+      fullPage: true,
+    });
+    console.log("📸 Screenshot salvo como lattes-dashboard.png");
+
+    // Futuro: aqui a gente navega até Produções e cadastra cada artigo.
     for (const art of articles) {
-      // Isso aqui é SÓ UM MOLDE. Troque IDs/classes pelos nomes reais.
-      //
-      // Exemplo: clicar em "Novo artigo"
-      // await page.click("text=Novo artigo");
-      // await page.waitForSelector("#campoTituloArtigo");
-
-      // título
-      // await page.fill("#campoTituloArtigo", art.title || "");
-
-      // se você já tiver esses campos no JSON, pode incluir:
-      // await page.fill("#campoAno", String(art.year || ""));
-      // await page.fill("#campoRevista", art.journal || "");
-
-      // salvar
-      // await Promise.all([
-      //   page.click("text=Salvar"),
-      //   page.waitForLoadState("networkidle"),
-      // ]);
-
-      // Por enquanto, só pra ver algo acontecendo, vamos logar no console:
       console.log("Simulando cadastro de artigo:", art.title);
+      // TODO: implementar clicks/preenchimento real nos formulários do Lattes
     }
   } finally {
     await browser.close();
@@ -97,6 +123,35 @@ app.get("/smoke", async (req, res) => {
   res.json({ title });
 });
 
+// -------------------- login-teste --------------------
+app.get("/login-teste", async (req, res) => {
+  try {
+    const { browser, page } = await loginLattes();
+    const currentUrl = page.url();
+    const title = await page.title();
+
+    await page.screenshot({
+      path: "lattes-dashboard.png",
+      fullPage: true,
+    });
+
+    await browser.close();
+
+    return res.json({
+      ok: true,
+      currentUrl,
+      title,
+      screenshot: "lattes-dashboard.png",
+    });
+  } catch (err) {
+    console.error("Erro em /login-teste:", err);
+    return res.status(500).json({
+      ok: false,
+      error: err.message || String(err),
+    });
+  }
+});
+
 // -------- endpoint que o n8n vai chamar --------
 app.post("/lattes/atualizar", async (req, res) => {
   try {
@@ -105,7 +160,7 @@ app.post("/lattes/atualizar", async (req, res) => {
     // O n8n SEMPRE envia um array
     if (!Array.isArray(payload)) {
       return res.status(400).json({
-        error: "O corpo da requisição deve ser um array de objetos SerpAPI."
+        error: "O corpo da requisição deve ser um array de objetos SerpAPI.",
       });
     }
 
@@ -122,27 +177,28 @@ app.post("/lattes/atualizar", async (req, res) => {
         publication_date: c.publication_date,
         conference: c.conference,
         pages: c.pages,
-        description: c.description
+        description: c.description,
       };
     });
 
     if (articles.length === 0) {
       return res.status(400).json({
-        error: "Nenhum artigo encontrado no payload."
+        error: "Nenhum artigo encontrado no payload.",
       });
     }
 
-    // Aqui chamamos o Playwright para inserir os artigos no Lattes
-    // await atualizarLattes(articles);
+    // Aqui chamamos o Playwright para logar e (por enquanto) só tirar print
+    await atualizarLattes(articles);
+
     return res.status(200).json({
       status: "ok",
-      processed: articles.length
+      processed: articles.length,
     });
   } catch (err) {
     console.error("Erro ao atualizar Lattes:", err);
     return res.status(500).json({
       status: "error",
-      message: "Falha ao atualizar Lattes"
+      message: "Falha ao atualizar Lattes",
     });
   }
 });
