@@ -16,69 +16,97 @@ if (!LATTES_CPF || !LATTES_PASSWORD) {
 
 // ====== FUNÇÃO: FAZ LOGIN NO LATTES VIA CPF (SSO CNPq) ======
 async function loginLattes() {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
-  const page = await context.newPage();
+  const browser = await chromium.launch({
+    headless: true,          // coloque false para debugar localmente
+    slowMo: 150,          // descomente para ver melhor (fora do docker)
+  });
+
+  const portalPage = await browser.newPage();
 
   try {
-    console.log("➡️ Abrindo página de login do Lattes (pkg_login.prc_form)…");
+    // 1) Abre a home do Lattes
+    console.log("➡️ Abrindo https://memoria.cnpq.br/web/portal-lattes/ …");
+    await portalPage.goto("https://memoria.cnpq.br/web/portal-lattes/", {
+      waitUntil: "domcontentloaded",
+    });
 
-    // Antes de carregar, prepara o handler do popup "Você será redirecionado..."
-    page.once("dialog", async (dialog) => {
-      console.log("⚠️ Dialog apareceu:", dialog.message());
+    // 2) Qualquer alerta que aparecer (incluindo o “Você será redirecionado…”)
+    portalPage.on("dialog", async (dialog) => {
+      console.log("⚠️ Dialog:", dialog.message());
       await dialog.accept();
     });
 
-    // URL que corresponde a "Atualizar currículo"
-    await page.goto("https://wwws.cnpq.br/cvlattesweb/pkg_login.prc_form", {
-      waitUntil: "load",
+    // 3) Clica em “Atualizar currículo” (abre nova aba/guia)
+    const [page] = await Promise.all([
+      portalPage.context().waitForEvent("page").then((newPage) => {
+        console.log("➡️ Nova aba aberta a partir de 'Atualizar currículo'");
+        return newPage;
+      }),
+      portalPage.click("text=Atualizar currículo"),
+    ]);
+    await page.waitForLoadState("load");
+
+    console.log("➡️ URL após clique em 'Atualizar currículo':", page.url());
+
+    // 4) Espera a nova aba carregar (pode ser wwws.cnpq.br ou login.cnpq.br)
+    console.log("➡️ Aguardando tela do CPF …");
+    await page.waitForURL(/(wwws\.cnpq\.br|login\.cnpq\.br)/, {
+      timeout: 60000,
     });
-
-    console.log("➡️ Aguardando redirecionar para login.cnpq.br (tela CPF)…");
-    await page.waitForURL(
-      /login\.cnpq\.br\/auth\/realms\/cnpq\/protocol\/openid-connect\/auth.*/,
-      { timeout: 30000 }
-    );
-
+    console.log("➡️ URL da tela do CPF:", page.url());
+    
     // ===== Tela do CPF =====
-    console.log("✏️ Preenchendo CPF…");
-    await page.waitForSelector("#accountId", { timeout: 15000 });
+    await page.waitForSelector("#accountId", { timeout: 15_000 });
+    console.log("➡️ URL tela CPF em que #accountId se encontra:", page.url());
+    console.log("✏️ Preenchendo CPF...");
     await page.fill("#accountId", LATTES_CPF);
 
-    console.log("➡️ Enviando CPF (botão Continue)…");
     await Promise.all([
-      page.click("#kc-login"),
-      page.waitForNavigation({ waitUntil: "networkidle" }),
+      page.click("#kc-login"), // botão "Continue"
+      page.waitForURL(
+        /login\.cnpq\.br\/auth\/realms\/cnpq\/login-actions\/authenticate/,
+        { 
+            timeout: 60_000,
+         },
+      ),
     ]);
 
     // ===== Tela da senha =====
-    console.log("➡️ Aguardando tela da senha…");
-    await page.waitForURL(
-      /login\.cnpq\.br\/auth\/realms\/cnpq\/login-actions\/authenticate.*/,
-      { timeout: 30000 }
+    console.log(
+      "➡️ Aguardando tela da senha em",
+      page.url(),
+      "selector: #password"
     );
-
+    
+    // A tela de senha pode demorar a renderizar; espera até ficar visível
+    try {
+      await page.waitForSelector("#password", { timeout: 60_000, state: "visible" });
+    } catch (err) {
+      const html = await page.content();
+      console.error("❌ Não achei #password. URL:", page.url());
+      console.error("HTML:", html);
+      throw err;
+    }
+    console.log("➡️ URL tela senha em que #password se encontra:", page.url());
     console.log("✏️ Preenchendo senha…");
-    await page.waitForSelector("#password", { timeout: 15000 });
     await page.fill("#password", LATTES_PASSWORD);
 
-    console.log("➡️ Enviando senha (botão Entrar)…");
     await Promise.all([
-      page.click("#kc-login"),
-      page.waitForNavigation({ waitUntil: "networkidle" }),
+      page.click("#kc-login"), // botão "Entrar"
+      page.waitForURL(/cvlattesweb\/PKG_MENU\.menu/, {
+        timeout: 60000,
+      }),
     ]);
 
-    // ===== Página do Currículo Lattes =====
-    console.log("➡️ Aguardando página do Currículo Lattes…");
-    await page.waitForURL(
-      /wwws\.cnpq\.br\/cvlattesweb\/PKG_MENU\.menu.*/,
-      { timeout: 30000 }
-    );
+    // ===== Currículo Lattes =====
+    console.log("✅ Login concluído. URL final:", page.url());
 
-    console.log("✅ Login no Lattes concluído com sucesso.");
+    // aqui você poderia tirar screenshot se quiser:
+    await page.screenshot({ path: "lattes-dashboard.png", fullPage: true });
+
     return { browser, page };
   } catch (err) {
-    console.error("❌ Erro durante login no Lattes:", err);
+    console.error("Erro durante login:", err);
     await browser.close();
     throw err;
   }
