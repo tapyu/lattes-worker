@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+        "type": "node",
+        "request": "attach",
+        "name": "Attach to Docker Node",
+        "port": 9229, // NOTE: 9229 is the port for debugging Node.js apps. For the server, ensure it's set up to listen on port 3000. Start the container on the port 3000 with the following command: `docker run --rm -p 3000:3000 -p 9229:9229 -e LATTES_CPF="..." -e LATTES_PASSWORD="..." -it lattes-worker:latest node --inspect-brk=0.0.0.0:9229 src/server.js`. `--inspect-brk=0.0.0.0:9229` initializes your Node app with the debugging protocol (V8 Inspector) active, listening on port 9229 on all interfaces (0.0.0.0). This allows you to attach an external debugger (Chrome DevTools, VS Code, etc.) to the process at runtime. Then, create break point and, in "Run and debug" tab, choose "Attach to Docker Node". After pressing F5, the "debug console" should pop up with "listening on :3000". In a terminal (outside the container), run `curl -v http://localhost:3000/login-teste`, the execution should pause at your breakpoint in VS Code.
+        "address": "127.0.0.1",
+        "localRoot": "${workspaceFolder}",
+        "remoteRoot": "/app",
+    }
+  ]
+}

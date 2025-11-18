@@ -119,17 +119,101 @@ async function atualizarLattes(articles = []) {
   try {
     console.log(`📚 Recebi ${articles.length} artigos para processar.`);
 
-    // META INICIAL: apenas tirar um print da página logada
-    await page.screenshot({
-      path: "lattes-dashboard.png",
-      fullPage: true,
+    // Abre menu Produções após o login
+    console.log("➡️ Abrindo menu 'Produções'…");
+    await page.waitForSelector("a:has-text(\"Produções\")", {
+      timeout: 60000,
+      state: "visible",
     });
-    console.log("📸 Screenshot salvo como lattes-dashboard.png");
+    await Promise.all([
+      page.waitForLoadState("networkidle"),
+      page.click("a:has-text(\"Produções\")"),
+    ]);
 
-    // Futuro: aqui a gente navega até Produções e cadastra cada artigo.
+    // Helper para pegar um iframe pelo trecho do src
+    const getFrameBySrc = async (partial) => {
+      const iframeHandle = await page.waitForSelector(
+        `iframe[src*="${partial}"]`,
+        { timeout: 60000 }
+      );
+      const frame = await iframeHandle.contentFrame();
+      if (!frame) {
+        throw new Error(`Não consegui acessar iframe com src contendo ${partial}`);
+      }
+      return frame;
+    };
+
+    // Garante que a lista de trabalhos carregou em um iframe
+    const listaFrame = await getFrameBySrc("pkg_trabalho.lista");
+
+    // Para cada artigo que tenha conference, entra em "Trabalhos publicados em anais de eventos"
     for (const art of articles) {
-      console.log("Simulando cadastro de artigo:", art.title);
-      // TODO: implementar clicks/preenchimento real nos formulários do Lattes
+      if (!art.conference) {
+        throw new Error(
+          `Artigo sem campo citation/conference: "${art.title || "sem título"}"`
+        );
+      }
+
+      console.log(
+        "➡️ Abrindo 'Trabalhos publicados em anais de eventos' para:",
+        art.title
+      );
+      await listaFrame.waitForSelector(
+        "a:has-text(\"Trabalhos publicados em anais de eventos\")",
+        { timeout: 60000, state: "visible" }
+      );
+      await Promise.all([
+        page.waitForLoadState("networkidle"),
+        listaFrame.click("a:has-text(\"Trabalhos publicados em anais de eventos\")"),
+      ]);
+
+      // Dentro da lista, clicar em "Incluir novo item" para abrir o formulário
+      await listaFrame.waitForSelector("a:has-text(\"Incluir novo item\")", {
+        timeout: 60000,
+        state: "visible",
+      });
+      await Promise.all([
+        page.waitForLoadState("networkidle"),
+        listaFrame.click("a:has-text(\"Incluir novo item\")"),
+      ]);
+
+      const formFrame = await getFrameBySrc("pkg_trabalho.form");
+
+      // Preenche campos principais do formulário "Trabalhos publicados em anais de eventos"
+      const anoPublicacao =
+        (art.publication_date && art.publication_date.match(/\\d{4}/)?.[0]) || "";
+      const paginas = (art.pages || "").split(/[-–]/).map((p) => p.trim());
+      const paginaInicial = paginas[0] || "";
+      const paginaFinal = paginas[1] || "";
+
+      await formFrame.fill('input[name="f_titulo"]', art.title || "");
+      await formFrame.fill('input[name="f_ano"]', anoPublicacao);
+      await formFrame.fill('input[name="f_evento"]', art.conference || "");
+      await formFrame.fill('input[name="f_ano_evento"]', anoPublicacao);
+      await formFrame.fill('input[name="f_cidade_evento"]', "");
+      await formFrame.fill('input[name="f_titulo_pub"]', art.conference || "");
+      if (paginaInicial) await formFrame.fill('input[name="f_pag_ini"]', paginaInicial);
+      if (paginaFinal) await formFrame.fill('input[name="f_pag_fim"]', paginaFinal);
+
+      // DOI ou PDF/link do artigo, se disponível
+      const maybeDoi =
+        (art.link && art.link.startsWith("10.")) ||
+        (art.pdf && art.pdf.startsWith("10."));
+      if (maybeDoi) {
+        await formFrame.fill('input[name="f_cod_doi"]', art.link || art.pdf || "");
+      } else if (art.link) {
+        // campo f_cod_doi é o único input de link disponível na tela
+        await formFrame.fill('input[name="f_cod_doi"]', art.link);
+      }
+
+      // Natureza: marcar "Completo" por padrão
+      await formFrame.check('input[name="F_COD_PROD"][value="121"]');
+
+      // País de publicação: manter Brasil, valor já selecionado ("BRA"). Se o HTML mudar, ajuste aqui.
+
+      // Salvar
+      await formFrame.click('a:has-text("Salvar")');
+      await page.waitForLoadState("networkidle");
     }
   } finally {
     await browser.close();
