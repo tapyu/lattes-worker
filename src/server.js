@@ -224,7 +224,7 @@ async function atualizarLattes(articles = []) {
     }); // aguarda o submenu carregar
 
     
-    console.log("➡️ clicando em 'Trabalhos publicados em anais de eventos'…");
+    console.log("➡️ clicando em 'Trabalhos publicados em anais de eventos'…"); // FIXME: ajustar o código para escolher entre "Trabalhos publicados em anais de eventos", "Artigos completos publicados em periódicos" ou "Texto em jornal ou revista (magazine)". Uma nova variável deve organizar os artigos faltantes por tipo, para que todos os artigos de uma dada categoria sejam inseridos em conjunto.
     await page.click('#megamenu6 a:has-text("Trabalhos publicados em anais de eventos")');
 
     // Garante que a lista de trabalhos carregou em um iframe
@@ -327,6 +327,10 @@ async function atualizarLattes(articles = []) {
     await producoesModal.locator(".tool.close").click();
     await page.waitForSelector("iframe[src*='pkg_trabalho.lista']", { state: "detached" });
     }
+
+    // TODO: falta implementar o envio das modificações finais para o CNPq
+
+    console.log("✅ Todos os artigos processados com sucesso.");
   } finally {
     await browser.close();
   }
@@ -398,7 +402,7 @@ app.post("/lattes/atualizar", async (req, res) => {
         pdf: firstResource?.link || null,
         authors: c.authors,
         publication_date: c.publication_date,
-        conference: c.conference,
+        conference: c.conference, // FIXME: mudar de `conference` pra `place`. Fazer handling de `c.conference` não existir (?)
         pages: c.pages,
         description: c.description,
         doi: c.doi,
