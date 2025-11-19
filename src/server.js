@@ -1,5 +1,82 @@
 import express from "express";
 import { chromium } from "playwright";
+import fs from "fs";
+import path from "path";
+
+/**
+ * Save HTML to disk.
+ * @param {string} targetDir - directory where HTML will be saved
+ * @param {string} elementSelector - CSS selector for specific element to export; if falsy exports whole page
+ * @param {import('playwright').Page} page - Playwright Page instance to export from
+ */
+async function savePageHtml(targetDir, elementSelector, page) {
+  if (!page) {
+    console.warn("savePageHtml: no page provided to export");
+    return;
+  }
+
+  try {
+    fs.mkdirSync(targetDir, { recursive: true });
+  } catch (e) {
+    console.warn("savePageHtml: could not create targetDir", targetDir, e && e.message);
+  }
+
+  try {
+    let html;
+    if (elementSelector) {
+      const handle = await page.$(elementSelector);
+      if (handle) {
+        // outerHTML gives the element and its children
+        html = await handle.evaluate((el) => el.outerHTML);
+      } else {
+        console.warn(`savePageHtml: selector '${elementSelector}' not found, falling back to full page`);
+        html = await page.content();
+      }
+    } else {
+      html = await page.content();
+    }
+
+    const filename = elementSelector
+      ? `processed-element-${Date.now()}.html`
+      : `processed-page-${Date.now()}.html`;
+    const outPath = path.join(targetDir, filename);
+    fs.writeFileSync(outPath, html, "utf8");
+    console.log("➡️ HTML salvo em:", outPath);
+  } catch (e) {
+    console.warn("savePageHtml: failed to write html:", e && e.message);
+  }
+}
+
+/**
+ * Captura e salva um screenshot garantindo que o diretório exista.
+ * @param {string} targetDir - diretório onde o screenshot será salvo
+ * @param {string} filename - nome do arquivo (ex.: lattes_dashboard.png)
+ * @param {import('playwright').Page} page - instância do Playwright Page
+ * @param {import('playwright').PageScreenshotOptions} [options]
+ * @returns {Promise<string|null>} caminho final do arquivo ou null em caso de erro
+ */
+async function saveScreenshot(targetDir, filename, page, options = {}) {
+  if (!page) {
+    console.warn("saveScreenshot: no page provided to capture");
+    return null;
+  }
+
+  try {
+    fs.mkdirSync(targetDir, { recursive: true });
+  } catch (e) {
+    console.warn("saveScreenshot: could not create targetDir", targetDir, e && e.message);
+  }
+
+  const outPath = path.join(targetDir, filename || `screenshot-${Date.now()}.png`);
+  try {
+    await page.screenshot({ fullPage: true, ...options, path: outPath });
+    console.log("➡️ Screenshot salvo em:", outPath);
+    return outPath;
+  } catch (e) {
+    console.warn("saveScreenshot: failed to take screenshot:", e && e.message);
+    return null;
+  }
+}
 
 const app = express();
 app.use(express.json());
@@ -101,8 +178,9 @@ async function loginLattes() {
     // ===== Currículo Lattes =====
     console.log("✅ Login concluído. URL final:", page.url());
 
-    // aqui você poderia tirar screenshot se quiser:
-    await page.screenshot({ path: "lattes-dashboard.png", fullPage: true });
+    // garante diretório de screenshots e tira screenshot
+    const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || "/app/screenshots";
+    await saveScreenshot(SCREENSHOT_DIR, "lattes_dashboard.png", page);
 
     return { browser, page };
   } catch (err) {
@@ -112,108 +190,142 @@ async function loginLattes() {
   }
 }
 
-// ====== FUNÇÃO: ATUALIZAR LATTES (POR ENQUANTO SÓ LOGIN + PRINT) ======
+// ====== FUNÇÃO: ATUALIZAR LATTES ======
 async function atualizarLattes(articles = []) {
   const { browser, page } = await loginLattes();
 
   try {
+    const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || "/app/screenshots";
+    
     console.log(`📚 Recebi ${articles.length} artigos para processar.`);
-
-    // Abre menu Produções após o login
-    console.log("➡️ Abrindo menu 'Produções'…");
-    await page.waitForSelector("a:has-text(\"Produções\")", {
-      timeout: 60000,
-      state: "visible",
-    });
-    await Promise.all([
-      page.waitForLoadState("networkidle"),
-      page.click("a:has-text(\"Produções\")"),
-    ]);
-
+    
     // Helper para pegar um iframe pelo trecho do src
     const getFrameBySrc = async (partial) => {
-      const iframeHandle = await page.waitForSelector(
+        const iframeHandle = await page.waitForSelector(
         `iframe[src*="${partial}"]`,
         { timeout: 60000 }
-      );
-      const frame = await iframeHandle.contentFrame();
-      if (!frame) {
+    );
+    const frame = await iframeHandle.contentFrame();
+    if (!frame) {
         throw new Error(`Não consegui acessar iframe com src contendo ${partial}`);
-      }
-      return frame;
+        }
+        return frame;
     };
+    // Abre menu Produções após o login
+    console.log("➡️ Mantendo o mouse em cima de menu 'Produções'…");
+    await page.waitForSelector("a:has-text(\"Produções\")", {
+        timeout: 60000,
+        state: "visible",
+    });
+    await page.hover("a:has-text(\"Produções\")")
+    await page.waitForSelector('#megamenu6 a:has-text("Trabalhos publicados em anais de eventos")', {
+        timeout: 60000,
+        state: "visible",
+    }); // aguarda o submenu carregar
+
+    
+    console.log("➡️ clicando em 'Trabalhos publicados em anais de eventos'…");
+    await page.click('#megamenu6 a:has-text("Trabalhos publicados em anais de eventos")');
 
     // Garante que a lista de trabalhos carregou em um iframe
     const listaFrame = await getFrameBySrc("pkg_trabalho.lista");
 
     // Para cada artigo que tenha conference, entra em "Trabalhos publicados em anais de eventos"
     for (const art of articles) {
-      if (!art.conference) {
+        if (!art.conference) {
         throw new Error(
-          `Artigo sem campo citation/conference: "${art.title || "sem título"}"`
+            `Artigo sem campo citation/conference: "${art.title || "sem título"}"`
         );
-      }
+        }
 
-      console.log(
+        console.log(
         "➡️ Abrindo 'Trabalhos publicados em anais de eventos' para:",
         art.title
-      );
-      await listaFrame.waitForSelector(
-        "a:has-text(\"Trabalhos publicados em anais de eventos\")",
-        { timeout: 60000, state: "visible" }
-      );
-      await Promise.all([
-        page.waitForLoadState("networkidle"),
-        listaFrame.click("a:has-text(\"Trabalhos publicados em anais de eventos\")"),
-      ]);
+        );
+        // Dentro da lista, clicar em "Incluir novo item" para abrir o formulário
+        await listaFrame.waitForSelector("a:has-text(\"Incluir novo item\")", {
+            timeout: 60000,
+            state: "visible",
+        });
+        await Promise.all([
+            page.waitForLoadState("networkidle"),
+            listaFrame.click("a:has-text(\"Incluir novo item\")"),
+        ]);
 
-      // Dentro da lista, clicar em "Incluir novo item" para abrir o formulário
-      await listaFrame.waitForSelector("a:has-text(\"Incluir novo item\")", {
-        timeout: 60000,
-        state: "visible",
-      });
-      await Promise.all([
-        page.waitForLoadState("networkidle"),
-        listaFrame.click("a:has-text(\"Incluir novo item\")"),
-      ]);
 
-      const formFrame = await getFrameBySrc("pkg_trabalho.form");
+        const formFrame = await getFrameBySrc("pkg_trabalho.form");
 
-      // Preenche campos principais do formulário "Trabalhos publicados em anais de eventos"
-      const anoPublicacao =
-        (art.publication_date && art.publication_date.match(/\\d{4}/)?.[0]) || "";
-      const paginas = (art.pages || "").split(/[-–]/).map((p) => p.trim());
-      const paginaInicial = paginas[0] || "";
-      const paginaFinal = paginas[1] || "";
+        const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || "/app/screenshots";
+        await savePageHtml(SCREENSHOT_DIR, null, listaFrame);
+        await saveScreenshot(SCREENSHOT_DIR, "lattes_anais_de_eventos_antes.png", page);
+        // Preenche campos principais do formulário "Trabalhos publicados em anais de eventos"
+        if (art.doi != null) {
+            await formFrame.fill('input[name="f_cod_doi"]', art.doi || "");
+            console.log("✏️ Preenchendo DOI");
+            await saveScreenshot(SCREENSHOT_DIR, "lattes_anais_de_eventos_doied.png", page);
+            console.log(
+                "✏️ DOI preenchido. A partir disso, os seguites campos são preenchidos automaticamente:\n"+
+                "\t- Título da publicação\n"+
+                "\t- Ano do evento\n"+
+                "\t- Nome do evento\n"+
+                "\t- Cidade do evento\n"+
+                "\t- Autores\n"+
+                "\t- Idioma\n"
+            );
+        } else {
+                console.log("✏️ Preenchendo informações manualmente pois não há DOI.");
+                // Título
+                await formFrame.fill('input[name="f_titulo"]', art.title || "");
+                console.log("✏️ Preenchendo título");
+                await saveScreenshot(SCREENSHOT_DIR, "lattes_anais_de_eventos_titled.png", page);
+                // Ano de publicação
+                await formFrame.fill('input[name="f_ano"]', art.publication_date);
+                console.log("✏️ Preenchendo ano");
+                await saveScreenshot(SCREENSHOT_DIR, "lattes_anais_de_eventos_yeared.png", page);
+                // Nome do evento
+                await formFrame.fill('input[name="f_evento"]', art.conference || "");
+                console.log("✏️ Preenchendo nome do evento");
+                await saveScreenshot(SCREENSHOT_DIR, "lattes_anais_de_eventos_evented.png", page);
+                // Ano do evento
+                await formFrame.fill('input[name="f_ano_evento"]', art.publication_date);
+                console.log("✏️ Preenchendo ano do evento");
+                await saveScreenshot(SCREENSHOT_DIR, "lattes_anais_de_eventos_event_yeared.png", page);
+                // Cidade do evento
+                await formFrame.fill('input[name="f_cidade_evento"]', "");
+                console.log("✏️ Preenchendo cidade do evento");
+                await saveScreenshot(SCREENSHOT_DIR, "lattes_anais_de_eventos_citied.png", page);
+                // Título da publicação
+                await formFrame.fill('input[name="f_titulo_pub"]', art.conference || "");
+                await saveScreenshot(SCREENSHOT_DIR, "lattes_anais_de_eventos_title_pubed.png", page);
+                console.log("✏️ Preenchendo título da publicação");
+            }
+        const paginas = (art.pages || "").split(/[-–]/).map((p) => p.trim());
+        const paginaInicial = paginas[0] || "";
+        const paginaFinal = paginas[1] || "";
+        if (paginaInicial) await formFrame.fill('input[name="f_pag_ini"]', paginaInicial);
+        if (paginaFinal) await formFrame.fill('input[name="f_pag_fim"]', paginaFinal);
 
-      await formFrame.fill('input[name="f_titulo"]', art.title || "");
-      await formFrame.fill('input[name="f_ano"]', anoPublicacao);
-      await formFrame.fill('input[name="f_evento"]', art.conference || "");
-      await formFrame.fill('input[name="f_ano_evento"]', anoPublicacao);
-      await formFrame.fill('input[name="f_cidade_evento"]', "");
-      await formFrame.fill('input[name="f_titulo_pub"]', art.conference || "");
-      if (paginaInicial) await formFrame.fill('input[name="f_pag_ini"]', paginaInicial);
-      if (paginaFinal) await formFrame.fill('input[name="f_pag_fim"]', paginaFinal);
+        // Natureza: marcar "Completo" por padrão
+        console.log("✏️ Marcando natureza como Completo");
+        await formFrame.check('input[name="F_COD_PROD"][value="121"]');
 
-      // DOI ou PDF/link do artigo, se disponível
-      const maybeDoi =
-        (art.link && art.link.startsWith("10.")) ||
-        (art.pdf && art.pdf.startsWith("10."));
-      if (maybeDoi) {
-        await formFrame.fill('input[name="f_cod_doi"]', art.link || art.pdf || "");
-      } else if (art.link) {
-        // campo f_cod_doi é o único input de link disponível na tela
-        await formFrame.fill('input[name="f_cod_doi"]', art.link);
-      }
+        // País de publicação: manter Brasil, valor já selecionado ("BRA"). Se o HTML mudar, ajuste aqui.
 
-      // Natureza: marcar "Completo" por padrão
-      await formFrame.check('input[name="F_COD_PROD"][value="121"]');
-
-      // País de publicação: manter Brasil, valor já selecionado ("BRA"). Se o HTML mudar, ajuste aqui.
-
-      // Salvar
-      await formFrame.click('a:has-text("Salvar")');
-      await page.waitForLoadState("networkidle");
+        // Salvar
+        console.log("💾 Salvando formulário");
+        await formFrame.click('a:has-text("Salvar")');
+        await page.waitForLoadState("networkidle");
+        await saveScreenshot(SCREENSHOT_DIR, "lattes_anais_de_eventos_saved.png", page);
+    }
+    // Fecha o modal de "Trabalhos publicados em anais de eventos" // ???: verificar se funciona
+    const producoesModal = page
+        .locator(".win-wrapper")
+        .filter({
+            has: page.locator('.win-title:has-text("Trabalhos publicados em anais de eventos")'),
+        });
+    if (await producoesModal.count()) {
+    await producoesModal.locator(".tool.close").click();
+    await page.waitForSelector("iframe[src*='pkg_trabalho.lista']", { state: "detached" });
     }
   } finally {
     await browser.close();
@@ -242,10 +354,9 @@ app.get("/login-teste", async (req, res) => {
     const currentUrl = page.url();
     const title = await page.title();
 
-    await page.screenshot({
-      path: "lattes-dashboard.png",
-      fullPage: true,
-    });
+    // save screenshot to configured screenshots dir
+    const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || "/app/screenshots";
+    await saveScreenshot(SCREENSHOT_DIR, "lattes_dashboard.png", page);
 
     await browser.close();
 
@@ -253,7 +364,7 @@ app.get("/login-teste", async (req, res) => {
       ok: true,
       currentUrl,
       title,
-      screenshot: "lattes-dashboard.png",
+      screenshot: "lattes_dashboard.png",
     });
   } catch (err) {
     console.error("Erro em /login-teste:", err);
@@ -290,6 +401,7 @@ app.post("/lattes/atualizar", async (req, res) => {
         conference: c.conference,
         pages: c.pages,
         description: c.description,
+        doi: c.doi,
       };
     });
 
@@ -299,7 +411,7 @@ app.post("/lattes/atualizar", async (req, res) => {
       });
     }
 
-    // Aqui chamamos o Playwright para logar e (por enquanto) só tirar print
+    // Aqui chamamos o Playwright para logar e inserir os artigos
     await atualizarLattes(articles);
 
     return res.status(200).json({
@@ -317,3 +429,13 @@ app.post("/lattes/atualizar", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`listening on :${PORT}`));
+
+// endpoint to serve the screenshot (if present)
+app.get("/screenshot", (req, res) => {
+  const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || "/app/screenshots";
+  const screenshotPath = path.join(SCREENSHOT_DIR, "lattes_dashboard.png");
+  if (!fs.existsSync(screenshotPath)) {
+    return res.status(404).json({ ok: false, error: "screenshot not found" });
+  }
+  return res.sendFile(screenshotPath);
+});
